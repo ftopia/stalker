@@ -5,6 +5,8 @@ require 'timeout'
 
 module Stalker
   extend self
+  
+  MAX_WAITING_TIME_BEFORE_CHANGING_QUEUE = 30
 
   def connect(url)
     @@url = url
@@ -67,9 +69,37 @@ module Stalker
   end
 
   class JobTimeout < RuntimeError; end
+  
+  # Return either the latest queue used or the global one
+  def q_hint
+    @q_hint || beanstalk
+  end
+  
+  # This heuristic is to help prevent one queue from starving. The idea is that
+  # if the connection returns a job right away, it probably has more available.
+  # But if it takes time, then it's probably empty. So reuse the same
+  # connection as long as it stays fast. Otherwise, have no preference.
+  # -- originally extracted from AsyncObserver and changed since
+  def reserve_and_set_hint()
+    t1 = Time.now.utc
+    # OPTIMIZE: use a timeout only if we have more than one queue to reserve from
+    return job = q_hint.reserve(MAX_WAITING_TIME_BEFORE_CHANGING_QUEUE)
+  rescue Beanstalk::TimedOut
+    log "did not get any job from this queue, retrying on another one"
+    @q_hint = nil
+    # OPTIMIZE: ensure we use another queue instead of relying on the random queue selection
+    # OPTIMIZE: we should exit at this point, if we received the right signal
+    retry
+  ensure
+    @q_hint = if brief?(t1, Time.now.utc) and job then job.conn else nil end
+  end
+
+  def brief?(t1, t2)
+    ((t2 - t1) * 100).to_i.abs < 10
+  end
 
   def work_one_job
-    job = beanstalk.reserve
+    job = reserve_and_set_hint
     name, args = JSON.parse job.body
     log_job_begin(name, args)
     handler = @@handlers[name]
