@@ -62,6 +62,7 @@ module Stalker
   def work(jobs=nil)
     prep(jobs)
     trap('TERM') { @stop = true; log "SIGTERM trapped, will stop ASAP" }
+    $0 = "waiting for a job"
     loop { work_one_job; break if @stop }
   end
 
@@ -113,6 +114,7 @@ module Stalker
   end
 
   def log_job_begin(name, args)
+    @original_procname = $0
     args_flat = unless args.empty?
       '(' + args.inject([]) do |accum, (key,value)|
         accum << "#{key}=#{value}"
@@ -123,9 +125,11 @@ module Stalker
 
     log [ "Working", name, args_flat ].join(' ')
     @job_begun = Time.now
+    $0 = "since #{@job_begun.to_i} working #{name}#{args_flat}"
   end
 
   def log_job_end(name, failed=false)
+    $0 = @original_procname
     ellapsed = Time.now - @job_begun
     ms = (ellapsed.to_f * 1000).to_i
     log "Finished #{name} in #{ms}ms #{failed ? ' (failed)' : ''}"
